@@ -168,6 +168,7 @@ def compute_lambda(true_scores, temp_scores, order_pairs, qid):
         w[i] += rho * rho_complement * delta
         w[i] -= rho * rho_complement * delta
 
+
     return lambdas, w, qid
 
 
