@@ -1,25 +1,34 @@
 # -*- coding: utf-8 -*-
 
 import re
-from pyspark import SparkContext,SparkConf,SQLContext
+import jieba
+import pandas as pd
+import pyspark.sql.functions as F
+from functools import reduce
+from pyspark import SparkContext
+from pyspark import SparkConf
+from pyspark import SQLContext
 from pyspark.sql import SparkSession
-from pyspark.ml.feature import HashingTF,IDF,VectorAssembler,Word2Vec,Word2VecModel,IDFModel
+from pyspark.ml.feature import HashingTF
+from pyspark.ml.feature import IDF
+from pyspark.ml.feature import IDFModel
+from pyspark.ml.feature import Word2Vec
+from pyspark.ml.feature import Word2VecModel
+from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.classification import LogisticRegression
 from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 from pyspark.sql.functions import udf
-from pyspark.sql.types import StringType,IntegerType,ArrayType,FloatType
-import jieba
-from functools import reduce
-import pyspark.sql.functions as F
+from pyspark.sql.types import StringType
+from pyspark.sql.types import IntegerType
+from pyspark.sql.types import ArrayType
+from pyspark.sql.types import FloatType
 from pyspark.ml.feature import CountVectorizer
 from pyspark.ml.feature import CountVectorizerModel
 from pyspark.sql.functions import lit
 from sklearn.metrics import confusion_matrix
-import pandas as pd
 
 
-
-def CreateSparkContext():
+def create_spark_context():
     sparkconf = SparkConf()\
         .setAppName('xxx')\
         .set('spark.ui.showConsoleProgress','false')\
@@ -27,9 +36,8 @@ def CreateSparkContext():
         .set('spark.executor.memory','4g')\
         .set('spark.excutor.cores','4')
     sc = SparkContext(conf = sparkconf)
-    print('master:'+sc.master)
+    print('master:' + sc.master)
     sc.setLogLevel('WARN')
-
     spark = SparkSession.builder.config(conf=sparkconf).getOrCreate()
     return sc,spark
 
@@ -41,10 +49,62 @@ def load_data(file_path):
         .load(file_path)
     return df
 
+# 对cat列将文本数据转换为数字
+def label_tran_udf(lab):
+    if lab == '洗发水':
+        return 1.0
+    elif lab == '书籍':
+        return 2.0
+    elif lab == '平板':
+        return 3.0
+    elif lab == '计算机':
+        return 4.0
+    elif lab == '衣服':
+        return 5.0
+    elif lab == '蒙牛':
+        return 6.0
+    elif lab == '手机':
+        return 7.0
+    elif lab == '水果':
+        return 8.0
+    elif lab == '热水器':
+        return 9.0
+    else:
+        return 10.0
 
+# 定义一个函数
+def set_index_udf(x):
+    global idx  # 将idx设置为全局变量
+    if x is not None:
+        idx += 1
+        return index_list[idx - 1]
+
+# 对文本数据进行处理
+# 清除文本中的非汉字
+def remove_punc_udf(line):
+    line = str(line)
+    if line.strip() == '':
+        return ''
+    rule = re.compile(u"[^\u4E00-\u9FA5]")
+    line = rule.sub('', line)
+    return line
+
+#切词，使用jieba自带词典
+def seg(x):
+    s = jieba.lcut(x, cut_all=False, HMM=False)
+    s = [x for x in s if len(x) > 1]
+    return s
+
+#若是有特定领域的新词典（自定义词典）需要加载进来
+# def seg(x):
+#     if not jieba.dt.initialized:
+#         jieba.load_userdict('词典的具体格式，可以有多种')
+#         s = jieba.lcut(x, cut_all=False, HMM=False)
+#         s = [x for x in s if len(x) > 1]
+#         return s
 
 if __name__ == '__main__':
-    sc,spark = CreateSparkContext()
+    sc, spark = create_spark_context()
     text_df = load_data('online_shopping_10_cats.csv')
     text_df.printSchema()
     print(text_df.count())
@@ -70,31 +130,6 @@ if __name__ == '__main__':
     text_df.select('cat').distinct().show()
     print(text_df.select('cat').distinct().count())
 
-
-    # 对cat列将文本数据转换为数字
-    def label_tran_udf(lab):
-        if lab == '洗发水':
-            return 1.0
-        elif lab == '书籍':
-            return 2.0
-        elif lab == '平板':
-            return 3.0
-        elif lab == '计算机':
-            return 4.0
-        elif lab == '衣服':
-            return 5.0
-        elif lab == '蒙牛':
-            return 6.0
-        elif lab == '手机':
-            return 7.0
-        elif lab == '水果':
-            return 8.0
-        elif lab == '热水器':
-            return 9.0
-        else:
-            return 10.0
-
-
     label_tran_udf_df = udf(label_tran_udf, FloatType())
     text_df = text_df.withColumn('cat_class', label_tran_udf_df(text_df.cat))
     text_df.show()
@@ -105,54 +140,17 @@ if __name__ == '__main__':
     #添加一列索引列
     index_list = [x for x in range(0, text_df.count())]  # 构造一个列表存储索引值，用生成器会出错
     idx = 0
-    # 定义一个函数
-    def set_index_udf(x):
-        global idx  # 将idx设置为全局变量
-        if x is not None:
-            idx += 1
-            return index_list[idx - 1]
-
 
     index = udf(set_index_udf, IntegerType())  # udf的注册，这里需要定义其返回值类型
     text_df = text_df.withColumn('id', index(text_df.constant))
-
-
-    # 对文本数据进行处理
-    # 清除文本中的非汉字
-    def remove_punc_udf(line):
-        line = str(line)
-        if line.strip() == '':
-            return ''
-        rule = re.compile(u"[^\u4E00-\u9FA5]")
-        line = rule.sub('', line)
-        return line
 
     remove_punc_udf_df = udf(remove_punc_udf, StringType())
     text_df = text_df.withColumn('text_remove_punc', remove_punc_udf_df(text_df.review))
     text_df.show()
 
-    #切词，使用jieba自带词典
-
-    def seg(x):
-        s = jieba.lcut(x, cut_all=False, HMM=False)
-        s = [x for x in s if len(x) > 1]
-        return s
-
     seg_udf = udf(seg,ArrayType(StringType()))
     text_df = text_df.withColumn('text_token',seg_udf(text_df.text_remove_punc))
     text_df.show()
-
-
-
-
-    #若是有特定领域的新词典（自定义词典）需要加载进来
-    # def seg(x):
-    #     if not jieba.dt.initialized:
-    #         jieba.load_userdict('词典的具体格式，可以有多种')
-    #         s = jieba.lcut(x, cut_all=False, HMM=False)
-    #         s = [x for x in s if len(x) > 1]
-    #         return s
-
 
     # seg_df = udf(seg, ArrayType(StringType()))
     # 数据集中含有列名为：keyword 这一列，这一列含有的数据全部是中文文本数据
